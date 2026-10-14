@@ -5,9 +5,11 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
@@ -42,7 +44,7 @@ public class FloatingService extends Service {
 
         long delayMs() {
             double m = unit == 0 ? 1 : unit == 1 ? 1000 : 60000;
-            return Math.max(50, (long) (delay * m));
+            return Math.max(1, (long) (delay * m));
         }
     }
 
@@ -59,6 +61,11 @@ public class FloatingService extends Service {
     private int idx = 0;
 
     private final Runnable stepRunnable = new Runnable() {
+        @Override public void run() { step(); }
+    };
+    private int runId = 0;
+    // safety net: if the system never reports the gesture result, keep the loop alive
+    private final Runnable watchdog = new Runnable() {
         @Override public void run() { step(); }
     };
 
@@ -98,11 +105,14 @@ public class FloatingService extends Service {
 
     private WindowManager.LayoutParams lp(int w, int hh, boolean touchable) {
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
         if (!touchable) flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(w, hh,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, flags, PixelFormat.TRANSLUCENT);
         p.gravity = Gravity.TOP | Gravity.START;
+        if (Build.VERSION.SDK_INT >= 28)
+            p.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         return p;
     }
 
@@ -219,7 +229,15 @@ public class FloatingService extends Service {
         g.setColor(p.active ? 0xFF2E7D32 : 0xFFE53935);
         g.setStroke(4, Color.WHITE);
         p.view.setBackground(g);
-        p.view.setAlpha(p.opacity / 100f);
+        applyAlpha(p);
+    }
+
+    // While running the exact opacity is used (0% = invisible).
+    // While editing, points below 15% show a faint ghost so you can still find and edit them.
+    private void applyAlpha(Point p) {
+        float a = p.opacity / 100f;
+        if (!running && a < 0.15f) a = 0.15f;
+        p.view.setAlpha(a);
     }
 
     private void setSize(Point p, int s) {
@@ -235,7 +253,7 @@ public class FloatingService extends Service {
 
     private void setOpacity(Point p, int o) {
         p.opacity = o;
-        p.view.setAlpha(o / 100f);
+        applyAlpha(p);
     }
 
     private void refreshLabels() {
@@ -318,30 +336,51 @@ public class FloatingService extends Service {
         if (points.isEmpty()) { toast("Add a point with +"); return; }
         closeMenu();
         running = true;
+        runId++;
         idx = 0;
         setTouchable(false);
+        for (Point q : points) applyAlpha(q);
         if (playBtn != null) playBtn.setText("\u275a\u275a");
         h.postDelayed(stepRunnable, 150);
     }
 
     private void stopRun() {
         running = false;
+        runId++;
         h.removeCallbacks(stepRunnable);
+        h.removeCallbacks(watchdog);
         setTouchable(true);
+        for (Point q : points) applyAlpha(q);
         if (playBtn != null) playBtn.setText("\u25b6");
     }
 
     private void step() {
         if (!running || points.isEmpty()) return;
+        h.removeCallbacks(stepRunnable);
+        h.removeCallbacks(watchdog);
         if (idx >= points.size()) idx = 0;
-        Point p = points.get(idx);
-        if (!ClickService.tap(p.lp.x + p.size / 2f, p.lp.y + p.size / 2f)) {
+        final Point p = points.get(idx);
+        idx = (idx + 1) % points.size();
+        // real on-screen position of the point (accurate with status bar, cutout, keyboard, etc.)
+        int[] loc = new int[2];
+        p.view.getLocationOnScreen(loc);
+        final long start = SystemClock.uptimeMillis();
+        final long delay = p.delayMs();
+        final int id = runId;
+        boolean ok = ClickService.tap(loc[0] + p.size / 2f, loc[1] + p.size / 2f, new Runnable() {
+            @Override public void run() {
+                if (!running || id != runId) return;
+                h.removeCallbacks(watchdog);
+                long wait = Math.max(0, start + delay - SystemClock.uptimeMillis());
+                h.postDelayed(stepRunnable, wait);
+            }
+        });
+        if (!ok) {
             stopRun();
             toast("Accessibility service is off");
             return;
         }
-        idx = (idx + 1) % points.size();
-        h.postDelayed(stepRunnable, p.delayMs());
+        h.postDelayed(watchdog, 1500);
     }
 
     private void teardown() {
@@ -420,10 +459,11 @@ public class FloatingService extends Service {
 
         final TextView ol = label("Opacity: " + p.opacity + "%", 14, false);
         c.addView(ol);
-        addSeek(c, 90, p.opacity - 10, val -> {
-            setOpacity(p, 10 + val);
+        addSeek(c, 100, p.opacity, val -> {
+            setOpacity(p, val);
             ol.setText("Opacity: " + p.opacity + "%");
         });
+        c.addView(label("0% = fully invisible while running (a faint ghost is shown here for editing).", 11, false));
         if (multi) addTo(c, btn("Apply opacity to all", v -> {
             for (Point q : points) setOpacity(q, p.opacity);
             toast("Opacity applied to all");
