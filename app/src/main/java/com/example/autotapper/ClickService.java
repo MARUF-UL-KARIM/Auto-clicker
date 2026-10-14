@@ -18,7 +18,7 @@ public class ClickService extends AccessibilityService {
         Path p = new Path();
         p.moveTo(x, y);
         GestureDescription g = new GestureDescription.Builder()
-                .addStroke(new GestureDescription.StrokeDescription(p, 0, 50)).build();
+                .addStroke(new GestureDescription.StrokeDescription(p, 0, 30)).build();
         return instance.dispatchGesture(g, null, null);
     }
 }

@@ -2,69 +2,101 @@ package com.example.autotapper;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.text.InputType;
-import android.view.Gravity;
+import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 public class MainActivity extends Activity {
+    private TextView status;
+
+    private int dp(int v) { return (int) (v * getResources().getDisplayMetrics().density); }
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
-        final SharedPreferences sp = getSharedPreferences("p", MODE_PRIVATE);
-
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(48, 96, 48, 48);
-        root.setGravity(Gravity.CENTER_HORIZONTAL);
+        root.setBackgroundColor(0xFFF5F5F5);
+        root.setPadding(dp(20), dp(48), dp(20), dp(20));
 
         TextView title = new TextView(this);
         title.setText("Auto Tapper");
-        title.setTextSize(28);
+        title.setTextSize(30);
+        title.setTextColor(0xFF212121);
         root.addView(title);
 
-        TextView lbl = new TextView(this);
-        lbl.setText("Interval between taps (ms)");
-        lbl.setPadding(0, 48, 0, 0);
-        root.addView(lbl);
+        status = new TextView(this);
+        status.setPadding(0, dp(8), 0, dp(16));
+        root.addView(status);
 
-        final EditText interval = new EditText(this);
-        interval.setInputType(InputType.TYPE_CLASS_NUMBER);
-        interval.setText(String.valueOf(sp.getLong("interval", 1000)));
-        root.addView(interval);
+        root.addView(card("Single Click", "One point \u00b7 set click interval (ms / sec / min)", 0xFF1E88E5,
+                v -> launch("single")));
+        root.addView(card("Multiple Click", "Many points \u00b7 delay per point \u00b7 Active button", 0xFF43A047,
+                v -> launch("multi")));
 
-        Button a11y = new Button(this);
-        a11y.setText("1. Enable accessibility service");
-        a11y.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
-        root.addView(a11y);
+        Button acc = new Button(this);
+        acc.setText("Accessibility settings");
+        acc.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        root.addView(acc);
 
-        Button start = new Button(this);
-        start.setText("2. Show floating panel");
-        start.setOnClickListener(v -> {
-            if (!Settings.canDrawOverlays(this)) {
-                startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:" + getPackageName())));
-                return;
-            }
-            long ms = 1000;
-            try { ms = Math.max(10, Long.parseLong(interval.getText().toString())); } catch (Exception ignored) { }
-            sp.edit().putLong("interval", ms).apply();
-            startService(new Intent(this, FloatingService.class));
-            Toast.makeText(this, "Panel shown. Open any app.", Toast.LENGTH_SHORT).show();
-        });
-        root.addView(start);
-
-        Button stop = new Button(this);
-        stop.setText("Hide floating panel");
-        stop.setOnClickListener(v -> stopService(new Intent(this, FloatingService.class)));
-        root.addView(stop);
+        Button hide = new Button(this);
+        hide.setText("Hide floating panel");
+        hide.setOnClickListener(v -> stopService(new Intent(this, FloatingService.class)));
+        root.addView(hide);
 
         setContentView(root);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        status.setText("Accessibility: " + (ClickService.instance != null ? "ON" : "OFF")
+                + "    Overlay: " + (Settings.canDrawOverlays(this) ? "ON" : "OFF"));
+    }
+
+    private View card(String t, String s, int color, View.OnClickListener c) {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setPadding(dp(20), dp(24), dp(20), dp(24));
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(16));
+        l.setBackground(g);
+        l.setOnClickListener(c);
+        TextView a = new TextView(this);
+        a.setText(t);
+        a.setTextSize(22);
+        a.setTextColor(Color.WHITE);
+        TextView d = new TextView(this);
+        d.setText(s);
+        d.setTextSize(14);
+        d.setTextColor(0xFFEEEEEE);
+        l.addView(a);
+        l.addView(d);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(16);
+        l.setLayoutParams(lp);
+        return l;
+    }
+
+    private void launch(String mode) {
+        if (!Settings.canDrawOverlays(this)) {
+            Toast.makeText(this, "Allow 'Display over other apps'", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName())));
+            return;
+        }
+        if (ClickService.instance == null) {
+            Toast.makeText(this, "Turn on Auto Tapper in Accessibility", Toast.LENGTH_LONG).show();
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            return;
+        }
+        startService(new Intent(this, FloatingService.class).putExtra("mode", mode));
+        moveTaskToBack(true);
     }
 }
