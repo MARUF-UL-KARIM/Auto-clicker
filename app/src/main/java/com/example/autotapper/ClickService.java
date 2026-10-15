@@ -12,6 +12,8 @@ public class ClickService extends AccessibilityService {
     static ClickService instance;
     private static Handler main;
 
+    interface Done { void run(boolean completed); }
+
     @Override protected void onServiceConnected() {
         instance = this;
         main = new Handler(Looper.getMainLooper());
@@ -20,8 +22,8 @@ public class ClickService extends AccessibilityService {
     @Override public void onInterrupt() { }
     @Override public boolean onUnbind(android.content.Intent i) { instance = null; return super.onUnbind(i); }
 
-    /** Sends one tap. 'done' runs when the system finished (or cancelled) the gesture. */
-    static boolean tap(float x, float y, final Runnable done) {
+    /** Sends one tap. 'done' runs when the system finished (true) or cancelled (false) the gesture. */
+    static boolean tap(float x, float y, final Done done) {
         ClickService s = instance;
         if (s == null) return false;
         try {
@@ -33,8 +35,8 @@ public class ClickService extends AccessibilityService {
             GestureDescription g = new GestureDescription.Builder()
                     .addStroke(new GestureDescription.StrokeDescription(p, 0, 5)).build();
             AccessibilityService.GestureResultCallback cb = new AccessibilityService.GestureResultCallback() {
-                @Override public void onCompleted(GestureDescription d) { if (done != null) done.run(); }
-                @Override public void onCancelled(GestureDescription d) { if (done != null) done.run(); }
+                @Override public void onCompleted(GestureDescription d) { if (done != null) done.run(true); }
+                @Override public void onCancelled(GestureDescription d) { if (done != null) done.run(false); }
             };
             return s.dispatchGesture(g, cb, main);
         } catch (Exception e) {
