@@ -60,7 +60,7 @@ public class FloatingService extends Service {
     private View menu, lockPopup, detector;
     private String mode = "multi";
     private boolean running = false, collapsed = false;
-    private int idx = 0, runId = 0;
+    private int idx = 0, runId = 0, failCount = 0;
     private long yieldUntil = 0, lastDispatch = 0, lastComplete = 0, popupClosedAt = 0;
 
     private final Runnable stepRunnable = new Runnable() {
@@ -365,7 +365,7 @@ public class FloatingService extends Service {
     private void refreshLabels() {
         for (int i = 0; i < points.size(); i++) {
             Point p = points.get(i);
-            p.view.setText(p.stop ? "\u25a0" : String.valueOf(i + 1));
+            p.view.setText(p.stop ? "" : String.valueOf(i + 1)); // stop bubble: no number
         }
     }
 
@@ -395,7 +395,7 @@ public class FloatingService extends Service {
     }
 
     private void removePoint() {
-        if (running || points.size() <= 1) return;
+        if (running || points.isEmpty()) return; // can go down to zero points
         closeMenu();
         Point p = points.remove(points.size() - 1);
         try { wm.removeView(p.view); } catch (Exception ignored) { }
@@ -413,8 +413,9 @@ public class FloatingService extends Service {
         final float[] d = new float[6];
         final Runnable longPress = new Runnable() {
             @Override public void run() {
+                if (p.locked) return; // locked: no menu; releasing still acts normally (Active start)
                 d[5] = 1;
-                if (p.locked) toast("Locked"); else showMenu(p);
+                showMenu(p);
             }
         };
         p.view.setOnTouchListener((v, e) -> {
@@ -513,6 +514,7 @@ public class FloatingService extends Service {
         runId++;
         idx = 0;
         yieldUntil = 0;
+        failCount = 0;
         setTouchable(false);
         for (Point q : points) applyAlpha(q);
         addDetector();
@@ -531,6 +533,15 @@ public class FloatingService extends Service {
         if (playBtn != null) playBtn.setText("\u25b6");
     }
 
+    private int nextIndex() {
+        int n = points.size();
+        for (int k = 0; k < n; k++) {
+            int i = (idx + k) % n;
+            if (!points.get(i).stop) return i; // the stop bubble never clicks
+        }
+        return -1;
+    }
+
     private void step() {
         if (!running || points.isEmpty()) return;
         h.removeCallbacks(stepRunnable);
@@ -540,20 +551,15 @@ public class FloatingService extends Service {
         if (lockPopup != null) wait = Math.max(wait, 300);
         if (wait > 0) { h.postDelayed(stepRunnable, wait); return; }
 
-        int n = points.size();
-        Point p = null;
-        for (int k = 0; k < n && p == null; k++) {
-            Point c = points.get(idx % n);
-            idx = (idx + 1) % n;
-            if (!c.stop) p = c; // the stop bubble never clicks
-        }
-        if (p == null) { stopRun(); return; }
+        final int i = nextIndex();
+        if (i < 0) { stopRun(); return; }
+        Point p = points.get(i);
+        idx = (i + 1) % points.size();
 
         // real on-screen position of the point (accurate with status bar, cutout, keyboard, etc.)
         int[] loc = new int[2];
         p.view.getLocationOnScreen(loc);
         final long start = now;
-        final long delay = p.delayMs();
         final int id = runId;
         lastDispatch = now;
         boolean ok = ClickService.tap(loc[0] + p.size / 2f, loc[1] + p.size / 2f, new ClickService.Done() {
@@ -563,14 +569,20 @@ public class FloatingService extends Service {
                 long t = SystemClock.uptimeMillis();
                 lastComplete = t;
                 if (!completed) yieldUntil = Math.max(yieldUntil, t + 700); // someone touched the screen
-                h.postDelayed(stepRunnable, Math.max(0, start + delay - t));
+                int ni = nextIndex();
+                if (ni < 0) { stopRun(); return; }
+                // a point's delay = time from the previous click to this point's own click
+                long w = Math.max(0, start + points.get(ni).delayMs() - t);
+                h.postDelayed(stepRunnable, w);
             }
         });
         if (!ok) {
-            stopRun();
-            toast("Accessibility service is off");
+            idx = i;
+            if (++failCount >= 3) { stopRun(); toast("Accessibility service is off"); return; }
+            h.postDelayed(stepRunnable, 300);
             return;
         }
+        failCount = 0;
         h.postDelayed(watchdog, 1500);
     }
 
@@ -607,7 +619,9 @@ public class FloatingService extends Service {
         c.setPadding(dp(16), dp(16), dp(16), dp(16));
 
         c.addView(label(multi ? "Point " + (points.indexOf(p) + 1) : "Single click", 20, true));
-        c.addView(label(multi ? "Delay before the next click" : "Click every", 14, false));
+        c.addView(label(!multi ? "Click every"
+                : points.indexOf(p) == 0 ? "Loop restart delay (after the last click, before this one)"
+                : "Delay after the previous click, before this one", 14, false));
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
